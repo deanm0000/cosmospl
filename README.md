@@ -49,5 +49,6 @@ Unfortunately, this isn't setup to use their emulator.
 4. Method for creating/upserting records
 5. Method for deleting records
 6. Method for reading a record with its id/partition_key (rather than via SQL query)
-7. Optionally, try to convert columns into dates or datetimes when returning to polars
+7. Publish to PyPi
+8. Optionally, try to convert columns into dates or datetimes when returning to polars
 
