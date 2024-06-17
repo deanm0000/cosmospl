@@ -13,10 +13,6 @@ https://github.com/Azure/azure-sdk-for-python/issues/12776
 
 * When you try to read an item that doesn't exist, the MS lib raises an Error so checking if an item exists requires try/except blocks. I'd refer it return None or an empty list.
 
-### Status
-
-This is a WIP. Right now it can return a SQL query as either a polars dataframe, python lists/dicts using orjson, or raw bytes. It uses httpx, rather than requests or aiohttp. It uses async only. Currently, the only method is `query`.
-
 ### Quick use example
 
 Create a Cosmos DB instance
@@ -28,9 +24,35 @@ cosdb = Cosmos('your_db_name', 'your_container_name', 'your_connection_string')
 
 df = await cosdb.query("select * from c", return_as='pl')
 ```
-### Async
+### Usage overview and differences from MS
 
-The query functionality is recursive and uses httpx.stream. Sometimes, Cosmos will give results back in pages rather than in a single response. When there will be additional pages then the initial response will have a continuation token as a header. By streaming the result, the header is known before the data is downloaded so then a concurrent request can be made for the 2nd page of data while the first is being downloaded. Since the function is recursive it will request the next page as its downloading the current page. It might be the case that the MS library does this but I'm not sure.
+All functionality is inside the `Cosmos` class which is similar to the container client in the MS SDK.
+
+For details please refer to the source.
+
+To initialize the class pass a database name, container name, and (optionally) the connection string to `Cosmos` as ordered arguments. If the connection string is omitted it'll use the `cosmos` environment variable.
+
+The methods in that class are:
+
+`query`: execute a query against the container. Use the `return_as` parameter to specify `pl` for polars dataframe, `dict` for dict/list, `resp` for the httpx response. Unlike MS, it returns everything in one call, it isn't an Async generator.
+
+`query_stream`: executes a query against the container. It returns an async generator of raw json. It is intended to be used in FastAPI streaming responses so it doesn't have to parse json or accumulate results before sending to end-user.
+
+In the case of both query methods, Cosmos returns a nested json where the data is inside a Documents key. In order to avoid parsing this in its entirety while only returning data, it looks for `Documents":[` and then only returns from there. Similarly at the end it truncates from  `,"_count"`.
+
+`create`: creates (not upserts) a record
+
+`upsert`: upserts a record
+
+`delete`: deletes a record
+
+`read`: will read one record based on input id and partition_key
+
+`get_container_meta`: returns meta data about the container
+
+### Known issue
+
+When authenticating to MS, if the auth hash contains a + then it will respond with 401. To workaround this, before sending a request to MS it will change the time in the seed of the hash until the output has doesn't have a +. This seems to work but hopefully I can get it fixed for real. I have [this](https://github.com/encode/httpx/discussions/3225) discussion started at httpx.
 
 ### Warning
 
@@ -41,14 +63,6 @@ On the Cosmos python sdk page it says:
 Unfortunately, this isn't setup to use their emulator.
 
 
-### TODO (not necessarily in the order I'll do them):
+### Non-implemented features:
 
-1. Documentation and docstrings
-2. More complete error handling
-3. Refactoring (already)
-4. Method for creating/upserting records
-5. Method for deleting records
-6. Method for reading a record with its id/partition_key (rather than via SQL query)
-7. Publish to PyPi
-8. Optionally, try to convert columns into dates or datetimes when returning to polars
-
+I'm open to PRs that implement features but for my purposes this has all the features I need and so I'm not likely to support more Cosmos features in this library any time soon.

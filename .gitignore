@@ -1,3 +1,5 @@
 dist
 .venv
 .env
+__pycache__
+windows
