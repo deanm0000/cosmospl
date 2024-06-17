@@ -3,7 +3,7 @@ requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cosmos pl"
+name = "cosmospl"
 version="0.0.01"
 authors=[
     { name="Dean MacGregor", email="powertrading121@gmail.com"}
