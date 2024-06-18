@@ -268,7 +268,11 @@ class Cosmos:
         partition_key: str | None = None,
         pk_id: str | int | None = None,
     ):
-        headers = {"x-ms-version": "2020-07-15", "resource_type": resource_type}
+        headers = {
+            "x-ms-version": "2020-07-15",
+            "resource_type": resource_type,
+            "user-agent": "python-cosmospl",
+        }
         # The resource_type header is for the auth class and is popped before sending
         if pk_id is not None:
             headers["x-ms-documentdb-partitionkeyrangeid"] = str(pk_id)
