@@ -377,6 +377,8 @@ class Cosmos:
                 json=body,
                 headers=headers,
             )
+            if "x-ms-session-token" in resp.headers:
+                self.session = resp.headers["x-ms-session-token"]
             return resp
         try:
             resp_bytes = await self._get_stream(
@@ -531,6 +533,8 @@ class Cosmos:
                 )
             else:
                 next_page = None
+            if "x-ms-session-token" in resp.headers:
+                self.session = resp.headers["x-ms-session-token"]
             resp_bytes = []
             async for chunk in resp.aiter_bytes():
                 resp_bytes.append(chunk)
@@ -557,7 +561,8 @@ class Cosmos:
             resource_type="docs", is_upsert=is_upsert, partition_key=partition_key
         )
         resp = await self.client.post(url, json=record, headers=headers)
-        self.session = resp.headers.get("x-ms-session-token")
+        if "x-ms-session-token" in resp.headers:
+            self.session = resp.headers["x-ms-session-token"]
         return resp
 
     async def create(self, record: dict | list):
@@ -599,6 +604,8 @@ class Cosmos:
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{id}"
 
         resp = await self.client.delete(url, headers=headers)
+        if "x-ms-session-token" in resp.headers:
+            self.session = resp.headers["x-ms-session-token"]
         if resp.is_success:
             return "Deleted"
         else:
