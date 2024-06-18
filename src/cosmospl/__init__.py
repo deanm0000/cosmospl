@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import hmac
 import os
-from datetime import datetime, timedelta, timezone
+import warnings
+from datetime import datetime, timezone  # timedelta
 from typing import Literal, TypeAlias
+from urllib.parse import quote
 
 import httpx
 import orjson
-import polars as pl
 
 from cosmospl.exceptions import (
     MustSpecifyPartitionKey,
@@ -20,9 +22,22 @@ from cosmospl.exceptions import (
     UnsupportedPartitionKey,
 )
 
+with contextlib.suppress(ModuleNotFoundError):
+    import polars as pl
+has_nest = False
+with contextlib.suppress(ModuleNotFoundError):
+    import nest_asyncio
+
+    has_nest = True
+
+if has_nest is True:
+    nest_asyncio.apply()
 ALLOWED_RETURNS: TypeAlias = Literal["dict", "pl", "raw", "pljson", "resp"]
 DOC_STR = 'Documents":['
 COUNT_STR = ',"_count"'
+RESOURCE_TYPES: TypeAlias = Literal[
+    "dbs", "colls", "sprocs", "udfs", "triggers", "users", "permissions", "docs"
+]
 
 
 class CosAuth(httpx.Auth):  # noqa: D101
@@ -50,18 +65,49 @@ class CosAuth(httpx.Auth):  # noqa: D101
         while resource_id[0] == "/":
             resource_id = resource_id[1:]
         resource_id_split = resource_id.split("/")
-        if resource_id_split[-1] == "docs":
+        if resource_id_split[-1] == "docs" or resource_id_split[-1] == "pkranges":
             resource_id = "/".join(resource_id_split[:-1])
         working_dt = datetime.now(tz=timezone.utc)
-        while True:
-            x_date = working_dt.strftime("%a, %d %b %Y %H:%M:%S GMT").lower()
-            auth = _gen_sig(verb, resource_type, resource_id, x_date, self.master_key)
-            if "+" in auth:
-                working_dt = working_dt - timedelta(seconds=1)
-            else:
-                break
-        # For an unknown reason, the server 401s requests made when there's a +
-        # in the auth header so this retries times until there's no +
+        # while True:
+        x_date = working_dt.strftime("%a, %d %b %Y %H:%M:%S GMT").lower()
+        auth = _gen_sig(verb, resource_type, resource_id, x_date, self.master_key)
+        # if "+" in auth:
+        #     working_dt = working_dt - timedelta(seconds=1)
+        # else:
+        #     break
+        request.headers["x-ms-date"] = x_date
+        request.headers["authorization"] = auth
+        yield request
+
+    def auth_flow(self, request: httpx.Request):
+        """
+        Make auth_flow for httpx Auth.
+
+        Args:
+            request (httpx.Request): _description_
+
+        Returns
+        -------
+            asyncio.Generator[httpx.Request, httpx.Response, None]: _description_
+        """
+        verb = request.method.lower()
+        resource_type = request.headers.get("resource_type")
+        request.headers.pop("resource_type")
+
+        resource_id = request.url.path
+        while resource_id[0] == "/":
+            resource_id = resource_id[1:]
+        resource_id_split = resource_id.split("/")
+        if resource_id_split[-1] == "docs" or resource_id_split[-1] == "pkranges":
+            resource_id = "/".join(resource_id_split[:-1])
+        working_dt = datetime.now(tz=timezone.utc)
+        # while True:
+        x_date = working_dt.strftime("%a, %d %b %Y %H:%M:%S GMT").lower()
+        auth = _gen_sig(verb, resource_type, resource_id, x_date, self.master_key)
+        # if "+" in auth:
+        #     working_dt = working_dt - timedelta(seconds=1)
+        # else:
+        #     break
         request.headers["x-ms-date"] = x_date
         request.headers["authorization"] = auth
         yield request
@@ -151,10 +197,10 @@ def _gen_sig(
 
     master_token = "master"
     token_version = "1.0"
-    print(text)
+    # print(text)
     secret = f"type={master_token}&ver={token_version}&sig={signature[:-1]}"
-    print(secret)
-    return secret
+    # print(secret)
+    return quote(secret, "-_.!~*'()")
 
 
 class Cosmos:
@@ -165,6 +211,7 @@ class Cosmos:
         db: str,
         container: str,
         conn_str: str | None = None,
+        return_as: ALLOWED_RETURNS = "dict",
         default_partition_key: str | None = None,
     ):
         if conn_str is None and "cosmos" in os.environ:
@@ -174,7 +221,7 @@ class Cosmos:
         self.container = container
         self.session = None
         self.partition_key = default_partition_key
-        self.url_suffix = ""
+
         account_dict = {
             (y := x.split("=", maxsplit=1))[0]: y[1] for x in conn_str.split(";")
         }
@@ -183,65 +230,48 @@ class Cosmos:
             url = url[0:-1]
         self.base_url = url
         self.client = httpx.AsyncClient(auth=CosAuth(account_dict["AccountKey"]))
-        self.partition_key_name = None
-        # self.key = account_dict["AccountKey"]
+
+        self.return_as = return_as
+        if has_nest is True:
+            loop = asyncio.get_event_loop()
+            # Schedule the coroutine and get the result
+            future = asyncio.ensure_future(self.get_container_meta(return_as="dict"))
+            meta = loop.run_until_complete(future)
+        else:
+            meta = self._get_container_meta_sync()
+        self.meta = meta
+        if (
+            "partitionKey" in meta
+            and "paths" in meta["partitionKey"]
+            and len(meta["partitionKey"]["paths"]) == 1
+        ):
+            part_name = meta["partitionKey"]["paths"][0]
+            while part_name[0] == "/":
+                part_name = part_name[1:]
+            self.partition_key_name = part_name
+        else:
+            print(meta)
+            warnings.warn(UnsupportedPartitionKey, stacklevel=2)
 
     def set_default_partition_key(self, default_partition_key: str | None = None):
         """Change default partition key to be used in queries."""
         self.partition_key = default_partition_key
-
-    def _make_headers_old(
-        self,
-        *,
-        verb: str,
-        is_query: bool,
-        resource_type: str,
-        resource_link: str,
-        max_item: int | str | None = None,
-        continuation: str | None = None,
-    ):
-        date = (datetime.now(tz=timezone.utc) - timedelta(seconds=3)).strftime(
-            "%a, %d %b %Y %H:%M:%S GMT"
-        )
-        headers = {
-            "x-ms-version": "2020-07-15",
-            "x-ms-documentdb-isquery": str(is_query).lower(),
-            "Content-Type": "application/query+json"
-            if is_query
-            else "application/json",
-            "x-ms-date": date,
-            "authorization": _gen_sig(
-                verb, resource_type, resource_link, date, self.key
-            ),
-        }
-        if max_item is not None:
-            headers["x-ms-max-item-count"] = str(max_item)
-        if self.session is not None:
-            headers["x-ms-session-token"] = self.session
-        if continuation is not None:
-            headers["x-ms-continuation"] = continuation
-        if self.partition_key is None and is_query:
-            headers["x-ms-documentdb-query-enablecrosspartition"] = "true"
-        elif self.partition_key is not None and is_query:
-            headers["x-ms-documentdb-partitionkey"] = '["' + self.partition_key + '"]'
-            headers["x-ms-documentdb-query-enablecrosspartition"] = "false"
-
-        return headers
 
     def _make_headers(
         self,
         *,
         is_query: bool | None = None,
         is_upsert: bool | None = None,
-        resource_type: str = "docs",
+        resource_type: RESOURCE_TYPES = "docs",
         max_item: int | str | None = None,
         continuation: str | None = None,
         partition_key: str | None = None,
+        pk_id: str | int | None = None,
     ):
-        # date = (datetime.now(tz=timezone.utc) - timedelta(seconds=3)).strftime(
-        #     "%a, %d %b %Y %H:%M:%S GMT"
-        # )
         headers = {"x-ms-version": "2020-07-15", "resource_type": resource_type}
+        # The resource_type header is for the auth class and is popped before sending
+        if pk_id is not None:
+            headers["x-ms-documentdb-partitionkeyrangeid"] = str(pk_id)
         if is_upsert is not None:
             headers["x-ms-documentdb-is-upsert"] = str(is_upsert).lower()
         if partition_key is None:
@@ -270,9 +300,10 @@ class Cosmos:
         query: str,
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS = "dict",
+        return_as: ALLOWED_RETURNS | None = None,
         max_item: int | str | None = None,
         max_retries: int = 5,
+        pk_id: str | int | None = None,
     ):
         """
         Perform query and return all results.
@@ -291,8 +322,17 @@ class Cosmos:
             _type_: _description_
         """
         retries = 0
+        if return_as is None:
+            return_as = self.return_as
         return await self._query(
-            query, params, partition_key, return_as, max_item, retries, max_retries
+            query,
+            params,
+            partition_key,
+            return_as,
+            max_item,
+            retries,
+            max_retries,
+            pk_id,
         )
 
     async def _query(
@@ -300,10 +340,11 @@ class Cosmos:
         query: str,
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS = "dict",
+        return_as: ALLOWED_RETURNS | None = None,
         max_item: int | str | None = None,
         retries: int = 0,
         max_retries: int = 5,
+        pk_id: str | int | None = None,
     ):
         """
         Private query meant for recursion with retries.
@@ -320,11 +361,14 @@ class Cosmos:
         -------
             _type_: _description_
         """
+        if return_as is None:
+            return_as = self.return_as
         params, body, headers, url = self._prep_query(
             query,
             params,
             partition_key,
             max_item,
+            pk_id,
         )
 
         if return_as == "resp":
@@ -375,6 +419,7 @@ class Cosmos:
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
         max_item: int | str | None = None,
+        pk_id: int | str | None = None,
     ):
         if params is None:
             params = []
@@ -386,6 +431,7 @@ class Cosmos:
             resource_type="docs",
             max_item=max_item,
             partition_key=partition_key,
+            pk_id=pk_id,
         )
 
         url = self.base_url + f"//dbs/{self.db}/colls/{self.container}/docs"
@@ -500,21 +546,6 @@ class Cosmos:
             return b"".join(resp_bytes)
 
     async def _create_or_upsert(self, record, is_upsert=False):
-        if self.partition_key_name is None:
-            meta = await self.get_container_meta()
-            if (
-                "partitionKey" in meta
-                and "paths" in meta["partitionKey"]
-                and len(meta["partitionKey"]["paths"]) == 1
-            ):
-                part_name = meta["partitionKey"]["paths"][0]
-                while part_name[0] == "/":
-                    part_name = part_name[1:]
-                self.partition_key_name = part_name
-            else:
-                print(meta)
-                raise UnsupportedPartitionKey
-
         url = self.base_url + f"//dbs/{self.db}/colls/{self.container}/docs"
         if self.partition_key_name in record:
             partition_key = record[self.partition_key_name]
@@ -577,7 +608,7 @@ class Cosmos:
         self,
         id: str,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS = "dict",
+        return_as: ALLOWED_RETURNS | None = None,
         max_retries: int = 5,
     ):
         """
@@ -588,6 +619,8 @@ class Cosmos:
             partition_key (str): The partition from which the id comes
             return_as: The return type either dict, pl, raw, resp
         """
+        if return_as is None:
+            return_as = self.return_as
         resp = await self._read(id, partition_key, retries=0, max_retries=max_retries)
         return self._apply_return_as(resp, return_as)
 
@@ -623,20 +656,44 @@ class Cosmos:
         elif return_as in ["pljson", "pl"]:
             return pl.read_json(resp.content)
 
-    async def get_container_meta(self, return_as="dict"):
+    async def get_container_meta(self, return_as: ALLOWED_RETURNS | None = None):
         """
         Get Container meta data.
 
         Args:
-            return_as (str, optional): _description_. Defaults to "dict".
+            return_as (str, optional): _description_.
 
         Returns
         -------
             _type_: _description_
         """
-        # resource_type = "docs"
-        # resource_link = f"dbs/{self.db}/colls/{self.container}"
+        if return_as is None:
+            return_as = self.return_as
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
         headers = self._make_headers(resource_type="colls")
+        resp = await self.client.get(url, headers=headers)
+        return self._apply_return_as(resp, return_as)
+
+    def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS | None = None):
+        if return_as is None:
+            return_as = self.return_as
+        sync_client = httpx.Client(auth=self.client.auth.master_key)
+        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
+        headers = self._make_headers(resource_type="colls")
+        resp = sync_client.get(url, headers=headers)
+        return self._apply_return_as(resp, return_as)
+
+    async def get_pk_ranges(self, return_as: ALLOWED_RETURNS | None = None):
+        """
+        Get Container pk ranges.
+
+        Returns
+        -------
+            _type_: _description_
+        """
+        if return_as is None:
+            return_as = self.return_as
+        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/pkranges"
+        headers = self._make_headers(resource_type="pkranges")
         resp = await self.client.get(url, headers=headers)
         return self._apply_return_as(resp, return_as)

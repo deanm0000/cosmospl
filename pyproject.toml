@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmospl"
-version="0.0.01"
+version="0.0.02"
 authors=[
     { name="Dean MacGregor", email="powertrading121@gmail.com"}
 ]
@@ -18,6 +18,7 @@ dependencies=[
 
 [project.optional-dependencies]
 polars=['polars']
+nest_asyncio=['nest_asyncio']
 
 
 [tool.ruff]

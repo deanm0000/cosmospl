@@ -50,9 +50,7 @@ In the case of both query methods, Cosmos returns a nested json where the data i
 
 `get_container_meta`: returns meta data about the container
 
-### Known issue
-
-When authenticating to MS, if the auth hash contains a + then it will respond with 401. To workaround this, before sending a request to MS it will change the time in the seed of the hash until the output has doesn't have a +. This seems to work but hopefully I can get it fixed for real. I have [this](https://github.com/encode/httpx/discussions/3225) discussion started at httpx.
+`get_pk_ranges`: returns the pk ranges of the container. Can be useful for doing cross partition query requests in chunks using the `pk_id` parameter
 
 ### Warning
 
@@ -60,9 +58,11 @@ On the Cosmos python sdk page it says:
 
 > [WARNING] Using the asynchronous client for concurrent operations like shown in this sample will consume a lot of RUs very fast. We strongly recommend testing this out against the cosmos emulator first to verify your code works well and avoid incurring charges.
 
-Unfortunately, this isn't setup to use their emulator.
+### Future polars enhancements (maybe)
 
+1. (optionally) detect datetime columns and automatically convert to pl.Date or pl.Datetime
+2. save a df to cosmos directly (possibly) with metadata so columns can be restored to same types when loaded
 
-### Non-implemented features:
+### Future General Enhancements (maybe)
 
-I'm open to PRs that implement features but for my purposes this has all the features I need and so I'm not likely to support more Cosmos features in this library any time soon.
+1. Add top level and database classes
