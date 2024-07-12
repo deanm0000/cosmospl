@@ -502,13 +502,16 @@ class Cosmos:
                         first_chunk = False
                     else:
                         yield prev_chunk
+                        await asyncio.sleep(0)
                         prev_chunk = chunk
                 first_stream = False
                 if last_stream is True:
                     yield get_inner_content(prev_chunk, False, True)
+                    await asyncio.sleep(0)
                     break
                 else:
                     yield get_inner_content(prev_chunk, False, True)[:-1] + b","
+                    await asyncio.sleep(0)
 
     async def _get_resp(self, url, *, json, headers):
         resp = await self.client.post(url, json=json, headers=headers)
