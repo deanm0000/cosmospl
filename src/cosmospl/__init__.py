@@ -691,7 +691,7 @@ class Cosmos:
     def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS | None = None):
         if return_as is None:
             return_as = self.return_as
-        sync_client = httpx.Client(auth=self.client.auth.master_key)
+        sync_client = httpx.Client(auth=CosAuth(self.client.auth.master_key))
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
         headers = self._make_headers(resource_type="colls")
         resp = sync_client.get(url, headers=headers)
