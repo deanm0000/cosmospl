@@ -8,7 +8,7 @@ import hmac
 import os
 import warnings
 from datetime import datetime, timezone  # timedelta
-from typing import Literal, TypeAlias
+from typing import AsyncIterator, Literal, TypeAlias, cast
 from urllib.parse import quote
 
 import httpx
@@ -36,7 +36,15 @@ ALLOWED_RETURNS: TypeAlias = Literal["dict", "pl", "raw", "pljson", "resp"]
 DOC_STR = 'Documents":['
 COUNT_STR = ',"_count"'
 RESOURCE_TYPES: TypeAlias = Literal[
-    "dbs", "colls", "sprocs", "udfs", "triggers", "users", "permissions", "docs"
+    "dbs",
+    "colls",
+    "sprocs",
+    "udfs",
+    "triggers",
+    "users",
+    "permissions",
+    "docs",
+    "pkranges",
 ]
 
 
@@ -46,7 +54,7 @@ class CosAuth(httpx.Auth):  # noqa: D101
 
     async def async_auth_flow(
         self, request: httpx.Request
-    ) -> asyncio.Generator[httpx.Request, httpx.Response, None]:
+    ) -> AsyncIterator[httpx.Request]:
         """
         Make auth_flow for httpx Auth.
 
@@ -55,9 +63,10 @@ class CosAuth(httpx.Auth):  # noqa: D101
 
         Returns
         -------
-            asyncio.Generator[httpx.Request, httpx.Response, None]: _description_
+            asyncio.Generator[httpx.Request]: _description_
         """
         verb = request.method.lower()
+        assert isinstance(verb, str)
         resource_type = request.headers.get("resource_type")
         request.headers.pop("resource_type")
 
@@ -91,6 +100,7 @@ class CosAuth(httpx.Auth):  # noqa: D101
             asyncio.Generator[httpx.Request, httpx.Response, None]: _description_
         """
         verb = request.method.lower()
+        assert isinstance(verb, str)
         resource_type = request.headers.get("resource_type")
         request.headers.pop("resource_type")
 
@@ -213,9 +223,11 @@ class Cosmos:
         conn_str: str | None = None,
         return_as: ALLOWED_RETURNS = "dict",
         default_partition_key: str | None = None,
+        global_client: str | None = None,
     ):
         if conn_str is None and "cosmos" in os.environ:
             conn_str = os.environ["cosmos"]  # noqa: SIM112
+        assert conn_str is not None
         self.db = db
 
         self.container = container
@@ -229,7 +241,16 @@ class Cosmos:
         while url[-1] == "/":
             url = url[0:-1]
         self.base_url = url
-        self.client = httpx.AsyncClient(auth=CosAuth(account_dict["AccountKey"]))
+        if global_client is None:
+            self.client = httpx.AsyncClient(
+                auth=CosAuth(account_dict["AccountKey"]), http2=True
+            )
+        else:
+            if global_client not in globals():
+                globals()[global_client] = httpx.AsyncClient(
+                    auth=CosAuth(account_dict["AccountKey"]), http2=True
+                )
+            self.client = globals()[global_client]
 
         self.return_as = return_as
         if has_nest is True:
@@ -239,19 +260,24 @@ class Cosmos:
             meta = loop.run_until_complete(future)
         else:
             meta = self._get_container_meta_sync()
+        assert meta is not None
+        assert isinstance(meta, dict)
         self.meta = meta
         if (
-            "partitionKey" in meta
-            and "paths" in meta["partitionKey"]
-            and len(meta["partitionKey"]["paths"]) == 1
+            "partitionKey" in cast(dict, meta)
+            and "paths" in cast(dict, meta)["partitionKey"]
+            and len(cast(dict, meta)["partitionKey"]["paths"]) == 1
         ):
-            part_name = meta["partitionKey"]["paths"][0]
+            part_name = cast(dict, meta)["partitionKey"]["paths"][0]
             while part_name[0] == "/":
                 part_name = part_name[1:]
             self.partition_key_name = part_name
         else:
-            print(meta)
-            warnings.warn(UnsupportedPartitionKey, stacklevel=2)
+            warnings.warn(
+                str(meta),
+                category=cast(type[Warning], UnsupportedPartitionKey),
+                stacklevel=2,
+            )
 
     def set_default_partition_key(self, default_partition_key: str | None = None):
         """Change default partition key to be used in queries."""
@@ -327,7 +353,7 @@ class Cosmos:
         """
         retries = 0
         if return_as is None:
-            return_as = self.return_as
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
         return await self._query(
             query,
             params,
@@ -366,7 +392,7 @@ class Cosmos:
             _type_: _description_
         """
         if return_as is None:
-            return_as = self.return_as
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
         params, body, headers, url = self._prep_query(
             query,
             params,
@@ -505,6 +531,7 @@ class Cosmos:
                         await asyncio.sleep(0)
                         prev_chunk = chunk
                 first_stream = False
+                assert prev_chunk is not None
                 if last_stream is True:
                     yield get_inner_content(prev_chunk, False, True)
                     await asyncio.sleep(0)
@@ -634,7 +661,7 @@ class Cosmos:
             return_as: The return type either dict, pl, raw, resp
         """
         if return_as is None:
-            return_as = self.return_as
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
         resp = await self._read(id, partition_key, retries=0, max_retries=max_retries)
         return self._apply_return_as(resp, return_as)
 
@@ -682,7 +709,7 @@ class Cosmos:
             _type_: _description_
         """
         if return_as is None:
-            return_as = self.return_as
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
         headers = self._make_headers(resource_type="colls")
         resp = await self.client.get(url, headers=headers)
@@ -690,8 +717,12 @@ class Cosmos:
 
     def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS | None = None):
         if return_as is None:
-            return_as = self.return_as
-        sync_client = httpx.Client(auth=CosAuth(self.client.auth.master_key))
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
+        assert self.client.auth is not None
+        assert hasattr(self.client.auth, "master_key")
+
+        master_key: str = self.client.auth.master_key  # type: ignore
+        sync_client = httpx.Client(auth=CosAuth(master_key))
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
         headers = self._make_headers(resource_type="colls")
         resp = sync_client.get(url, headers=headers)
@@ -706,8 +737,8 @@ class Cosmos:
             _type_: _description_
         """
         if return_as is None:
-            return_as = self.return_as
+            return_as = cast(ALLOWED_RETURNS, self.return_as)
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/pkranges"
         headers = self._make_headers(resource_type="pkranges")
         resp = await self.client.get(url, headers=headers)
-        return self._apply_return_as(resp, return_as)
+        return self._apply_return_as(resp, cast(ALLOWED_RETURNS, self.return_as))
