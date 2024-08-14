@@ -224,7 +224,9 @@ class Cosmos:
         return_as: ALLOWED_RETURNS = "dict",
         default_partition_key: str | None = None,
         global_client: str | None = None,
+        max_retries: int = 5,
     ):
+        self.max_retries = max_retries
         if conn_str is None and "cosmos" in os.environ:
             conn_str = os.environ["cosmos"]  # noqa: SIM112
         assert conn_str is not None
@@ -332,7 +334,7 @@ class Cosmos:
         partition_key: str | None = None,
         return_as: ALLOWED_RETURNS | None = None,
         max_item: int | str | None = None,
-        max_retries: int = 5,
+        max_retries: int | None = None,
         pk_id: str | int | None = None,
     ):
         """
@@ -351,7 +353,9 @@ class Cosmos:
         -------
             _type_: _description_
         """
-        retries = 0
+        if max_retries is None:
+            max_retries = self.max_retries
+
         if return_as is None:
             return_as = cast(ALLOWED_RETURNS, self.return_as)
         return await self._query(
@@ -360,7 +364,7 @@ class Cosmos:
             partition_key,
             return_as,
             max_item,
-            retries,
+            0,
             max_retries,
             pk_id,
         )
@@ -400,50 +404,68 @@ class Cosmos:
             max_item,
             pk_id,
         )
-
-        if return_as == "resp":
+        try:
             resp = await self._get_resp(
                 url,
                 json=body,
                 headers=headers,
             )
+            resp.raise_for_status()
             if "x-ms-session-token" in resp.headers:
                 self.session = resp.headers["x-ms-session-token"]
-            return resp
-        try:
-            resp_bytes = await self._get_stream(
-                url,
-                json=body,
-                headers=headers,
-            )
+
         except Resp401:
-            await self.client.aclose()
+            raise
+        except Exception:
             if retries < max_retries:
-                print("got 401, retrying")
-                self.client = httpx.AsyncClient()
-                return self._query(
+                resp = await self._query(
                     query,
                     params,
                     partition_key,
-                    return_as,
+                    "resp",
                     max_item,
-                    retries=retries + 1,
-                    max_retries=max_retries,
+                    retries + 1,
+                    max_retries,
+                    pk_id,
                 )
+                resp = cast(httpx.Response, resp)
             else:
                 raise
+        if return_as == "resp":
+            return resp
+        # try:
+        #     resp_bytes = await self._get_stream(
+        #         url,
+        #         json=body,
+        #         headers=headers,
+        #     )
+        # except Resp401:
+        #     raise
+        # except Exception:
+        #     if retries < max_retries:
+        #         return await self._query(
+        #             query,
+        #             params,
+        #             partition_key,
+        #             return_as,
+        #             max_item,
+        #             retries=retries + 1,
+        #             max_retries=max_retries,
+        #         )
+        #     else:
+        #         raise
         if return_as == "dict":
-            return orjson.loads(resp_bytes)["Documents"]
+            return orjson.loads(resp.content)["Documents"]
         elif return_as == "pljson":
             return (
-                pl.read_json(resp_bytes)
+                pl.read_json(resp.content)
                 .select(pl.col("Documents").explode())
                 .unnest("Documents")
             )
         elif return_as == "pl":
-            return pl.read_json(get_inner_content(resp_bytes))
+            return pl.read_json(get_inner_content(resp.content))
         else:
-            return resp_bytes
+            return resp.content
 
     def _prep_query(
         self,
@@ -583,7 +605,11 @@ class Cosmos:
                 resp_bytes.append(next_page)
             return b"".join(resp_bytes)
 
-    async def _create_or_upsert(self, record, is_upsert=False):
+    async def _create_or_upsert(
+        self, record, is_upsert=False, retries=0, max_retries=None
+    ):
+        if max_retries is None:
+            max_retries = self.max_retries
         url = self.base_url + f"//dbs/{self.db}/colls/{self.container}/docs"
         if self.partition_key_name in record:
             partition_key = record[self.partition_key_name]
@@ -594,9 +620,21 @@ class Cosmos:
         headers = self._make_headers(
             resource_type="docs", is_upsert=is_upsert, partition_key=partition_key
         )
-        resp = await self.client.post(url, json=record, headers=headers)
-        if "x-ms-session-token" in resp.headers:
-            self.session = resp.headers["x-ms-session-token"]
+        try:
+            resp = await self.client.post(url, json=record, headers=headers)
+            resp.raise_for_status()
+            if "x-ms-session-token" in resp.headers:
+                self.session = resp.headers["x-ms-session-token"]
+
+        except Resp401:
+            raise
+        except Exception:
+            if retries < max_retries:
+                return await self._create_or_upsert(
+                    record, is_upsert, retries + 1, max_retries
+                )
+            else:
+                raise
         return resp
 
     async def create(self, record: dict | list):
@@ -625,7 +663,13 @@ class Cosmos:
         """
         return await self._create_or_upsert(record, is_upsert=True)
 
-    async def delete(self, id: str, partition_key: str | None = None):
+    async def delete(
+        self,
+        id: str,
+        partition_key: str | None = None,
+        retries: int = 0,
+        max_retries: int | None = None,
+    ):
         """
         Delete a record in the cosmos container.
 
@@ -633,17 +677,23 @@ class Cosmos:
             id (str): The id to be deleted
             partition_key (str): The partition from which the id comes
         """
+        if max_retries is None:
+            max_retries = self.max_retries
         headers = self._make_headers(partition_key=partition_key)
 
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{id}"
+        try:
+            resp = await self.client.delete(url, headers=headers)
+            resp.raise_for_status()
+            if "x-ms-session-token" in resp.headers:
+                self.session = resp.headers["x-ms-session-token"]
 
-        resp = await self.client.delete(url, headers=headers)
-        if "x-ms-session-token" in resp.headers:
-            self.session = resp.headers["x-ms-session-token"]
-        if resp.is_success:
-            return "Deleted"
-        else:
-            return f"Didn't delete \n{resp.text}"
+        except Resp401:
+            raise
+        except Exception:
+            if retries < max_retries - 1:
+                return await self.delete(id, partition_key, retries + 1, max_retries)
+        return resp.content
 
     async def read(
         self,
@@ -671,22 +721,23 @@ class Cosmos:
         partition_key: str | None = None,
         retries: int = 0,
         max_retries: int = 5,
-    ):
+    ) -> httpx.Response:
         resource_type = "docs"
         headers = self._make_headers(
             resource_type=resource_type, partition_key=partition_key
         )
 
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{id}"
-
-        resp = await self.client.get(url, headers=headers)
-        if resp.status_code == 401 and retries < max_retries:
-            resp = await self._read(
-                id, partition_key, retries=retries + 1, max_retries=max_retries
-            )
-        elif not resp.is_success:
-            msg = resp.text
-            raise RespFail(msg)
+        try:
+            resp = await self.client.get(url, headers=headers)
+            resp.raise_for_status()
+        except Resp401:
+            raise
+        except Exception:
+            if retries < max_retries - 1:
+                return await self._read(
+                    id, partition_key, retries=retries + 1, max_retries=max_retries
+                )
         return resp
 
     def _apply_return_as(self, resp: httpx.Response, return_as: ALLOWED_RETURNS):

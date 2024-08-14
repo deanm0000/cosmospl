@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cosmospl"
-version="0.0.06"
+version="0.0.07"
 authors=[
     { name="Dean MacGregor", email="powertrading121@gmail.com"}
 ]
@@ -12,7 +12,7 @@ description="An alternative Azure Cosmos library with orjson, polars, and fastap
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies=[
-    "httpx",
+    "httpx[http2]",
     "orjson"
     ]
 
