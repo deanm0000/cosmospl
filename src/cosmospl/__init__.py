@@ -8,7 +8,16 @@ import hmac
 import os
 import warnings
 from datetime import datetime, timezone  # timedelta
-from typing import AsyncIterator, Literal, TypeAlias, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    AsyncIterator,
+    Generator,
+    Literal,
+    TypeAlias,
+    cast,
+    overload,
+)
 from urllib.parse import quote
 
 import httpx
@@ -221,7 +230,6 @@ class Cosmos:
         db: str,
         container: str,
         conn_str: str | None = None,
-        return_as: ALLOWED_RETURNS = "dict",
         default_partition_key: str | None = None,
         global_client: str | None = None,
         max_retries: int = 5,
@@ -254,7 +262,6 @@ class Cosmos:
                 )
             self.client = globals()[global_client]
 
-        self.return_as = return_as
         if has_nest is True:
             loop = asyncio.get_event_loop()
             # Schedule the coroutine and get the result
@@ -327,12 +334,48 @@ class Cosmos:
 
         return headers
 
+    @overload
+    async def query(
+        self,
+        query: str,
+        params: list[dict[str, str]] | None,
+        partition_key: str | None,
+        return_as: Literal["dict"],
+        max_item: int | str | None,
+        max_retries: int | None,
+        pk_id: str | int | None,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def query(
+        self,
+        query: str,
+        params: list[dict[str, str]] | None,
+        partition_key: str | None,
+        return_as: Literal["pl", "pljson"],
+        max_item: int | str | None,
+        max_retries: int | None,
+        pk_id: str | int | None,
+    ) -> pl.DataFrame: ...
+
+    @overload
+    async def query(
+        self,
+        query: str,
+        params: list[dict[str, str]] | None,
+        partition_key: str | None,
+        return_as: Literal["raw"],
+        max_item: int | str | None,
+        max_retries: int | None,
+        pk_id: str | int | None,
+    ) -> str: ...
+
     async def query(
         self,
         query: str,
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS | None = None,
+        return_as: ALLOWED_RETURNS = "dict",
         max_item: int | str | None = None,
         max_retries: int | None = None,
         pk_id: str | int | None = None,
@@ -356,8 +399,6 @@ class Cosmos:
         if max_retries is None:
             max_retries = self.max_retries
 
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
         return await self._query(
             query,
             params,
@@ -374,7 +415,7 @@ class Cosmos:
         query: str,
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS | None = None,
+        return_as: ALLOWED_RETURNS = "dict",
         max_item: int | str | None = None,
         retries: int = 0,
         max_retries: int = 5,
@@ -395,8 +436,6 @@ class Cosmos:
         -------
             _type_: _description_
         """
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
         params, body, headers, url = self._prep_query(
             query,
             params,
@@ -497,7 +536,7 @@ class Cosmos:
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
         max_item: int | str | None = None,
-    ):
+    ) -> AsyncGenerator[bytes, None]:
         """
         Perform query and return all results as a generator.
 
@@ -549,6 +588,7 @@ class Cosmos:
                         prev_chunk = get_inner_content(chunk, first_chunk, False)[1:]
                         first_chunk = False
                     else:
+                        assert prev_chunk is not None
                         yield prev_chunk
                         await asyncio.sleep(0)
                         prev_chunk = chunk
@@ -695,11 +735,38 @@ class Cosmos:
                 return await self.delete(id, partition_key, retries + 1, max_retries)
         return resp.content
 
+    @overload
+    async def read(
+        self,
+        id: str,
+        partition_key: str | None,
+        return_as: Literal["dict"],
+        max_retries: int,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def read(
+        self,
+        id: str,
+        partition_key: str | None,
+        return_as: Literal["pl", "pljson"],
+        max_retries: int,
+    ) -> pl.DataFrame: ...
+
+    @overload
+    async def read(
+        self,
+        id: str,
+        partition_key: str | None,
+        return_as: Literal["raw"],
+        max_retries: int,
+    ) -> str: ...
+
     async def read(
         self,
         id: str,
         partition_key: str | None = None,
-        return_as: ALLOWED_RETURNS | None = None,
+        return_as: ALLOWED_RETURNS = "dict",
         max_retries: int = 5,
     ):
         """
@@ -710,8 +777,6 @@ class Cosmos:
             partition_key (str): The partition from which the id comes
             return_as: The return type either dict, pl, raw, resp
         """
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
         resp = await self._read(id, partition_key, retries=0, max_retries=max_retries)
         return self._apply_return_as(resp, return_as)
 
@@ -748,7 +813,18 @@ class Cosmos:
         elif return_as in ["pljson", "pl"]:
             return pl.read_json(resp.content)
 
-    async def get_container_meta(self, return_as: ALLOWED_RETURNS | None = None):
+    @overload
+    async def get_container_meta(
+        self, return_as: Literal["dict"]
+    ) -> dict[str, Any]: ...
+    @overload
+    async def get_container_meta(
+        self, return_as: Literal["pl", "pljson"]
+    ) -> pl.DataFrame: ...
+    @overload
+    async def get_container_meta(self, return_as: Literal["raw"]) -> str: ...
+
+    async def get_container_meta(self, return_as: ALLOWED_RETURNS = "dict"):
         """
         Get Container meta data.
 
@@ -759,16 +835,12 @@ class Cosmos:
         -------
             _type_: _description_
         """
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
         headers = self._make_headers(resource_type="colls")
         resp = await self.client.get(url, headers=headers)
         return self._apply_return_as(resp, return_as)
 
-    def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS | None = None):
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
+    def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS = "dict"):
         assert self.client.auth is not None
         assert hasattr(self.client.auth, "master_key")
 
@@ -779,7 +851,16 @@ class Cosmos:
         resp = sync_client.get(url, headers=headers)
         return self._apply_return_as(resp, return_as)
 
-    async def get_pk_ranges(self, return_as: ALLOWED_RETURNS | None = None):
+    @overload
+    async def get_pk_ranges(self, return_as: Literal["dict"]) -> dict[str, Any]: ...
+    @overload
+    async def get_pk_ranges(
+        self, return_as: Literal["pl", "pljson"]
+    ) -> pl.DataFrame: ...
+    @overload
+    async def get_pk_ranges(self, return_as: Literal["raw"]) -> str: ...
+
+    async def get_pk_ranges(self, return_as: ALLOWED_RETURNS = "dict"):
         """
         Get Container pk ranges.
 
@@ -787,9 +868,7 @@ class Cosmos:
         -------
             _type_: _description_
         """
-        if return_as is None:
-            return_as = cast(ALLOWED_RETURNS, self.return_as)
         url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/pkranges"
         headers = self._make_headers(resource_type="pkranges")
         resp = await self.client.get(url, headers=headers)
-        return self._apply_return_as(resp, cast(ALLOWED_RETURNS, self.return_as))
+        return self._apply_return_as(resp, cast(ALLOWED_RETURNS, return_as))
