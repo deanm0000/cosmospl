@@ -16,7 +16,7 @@ class Resp401(RespFail):
     """Unauthorized."""
 
 
-class UnsupportedPartitionKey(Exception):
+class UnsupportedPartitionKey(UserWarning):
     """Unsupported Partition Key."""
 
 

@@ -284,7 +284,7 @@ class Cosmos:
         else:
             warnings.warn(
                 str(meta),
-                category=cast(type[Warning], UnsupportedPartitionKey),
+                category=UnsupportedPartitionKey,
                 stacklevel=2,
             )
 
@@ -888,10 +888,10 @@ class CosmosLog(logging.Handler):
         global_client: str | None = None,
         max_retries: int = 5,
     ):
-        super().__init__()
         self.cosdb = Cosmos(
             db, container, conn_str, default_partition_key, global_client, max_retries
         )
+        super().__init__()
         try:
             self.loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -942,7 +942,7 @@ def cosmos_logger(
         logging.Logger: _description_
     """
     logger = logging.getLogger(logger_name)
-    handler = Cosmos(
+    handler = CosmosLog(
         db, container, conn_str, default_partition_key, global_client, max_retries
     )
     if logger_level is None:

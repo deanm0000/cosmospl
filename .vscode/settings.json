@@ -1,4 +1,5 @@
 {
+    "jupyter.notebookFileRoot": "${fileDirname}/..",
     "cSpell.words": [
         "partitionkeyrangeid"
     ]
