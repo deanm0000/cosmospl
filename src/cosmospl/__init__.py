@@ -5,6 +5,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import logging
 import os
 import warnings
 from datetime import datetime, timezone  # timedelta
@@ -873,3 +874,79 @@ class Cosmos:
         headers = self._make_headers(resource_type="pkranges")
         resp = await self.client.get(url, headers=headers)
         return self._apply_return_as(resp, cast(ALLOWED_RETURNS, return_as))
+
+
+class CosmosLog(logging.Handler):
+    """Custom logger use the cosmos_logger function to get a logger."""
+
+    def __init__(
+        self,
+        db: str,
+        container: str,
+        conn_str: str | None = None,
+        default_partition_key: str | None = None,
+        global_client: str | None = None,
+        max_retries: int = 5,
+    ):
+        super().__init__()
+        self.cosdb = Cosmos(
+            db, container, conn_str, default_partition_key, global_client, max_retries
+        )
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+
+    async def async_emit(self, record):  # noqa: D102
+        await self.cosdb.create(
+            {
+                "id": datetime.now(tz=timezone.utc).isoformat(),
+                "msg": self.format(record),
+                "type": "test",
+            }
+        )
+
+    def emit(self, record):  # noqa: D102
+        self.loop.create_task(self.async_emit(record))
+
+    def close(self):  # noqa: D102
+        self.loop.run_until_complete(asyncio.gather(*asyncio.all_tasks(self.loop)))
+        self.loop.close()
+
+
+def cosmos_logger(
+    logger_name: str,
+    db: str,
+    container: str,
+    conn_str: str | None = None,
+    default_partition_key: str | None = None,
+    global_client: str | None = None,
+    max_retries: int = 5,
+    logger_level: int | None = None,
+) -> logging.Logger:
+    """
+    Makes a logger that writes to cosmos db.
+
+    Args:
+        logger_name (str): _description_
+        db (str): _description_
+        container (str): _description_
+        conn_str (str | None, optional): _description_. Defaults to None.
+        default_partition_key (str | None, optional): _description_. Defaults to None.
+        global_client (str | None, optional): _description_. Defaults to None.
+        max_retries (int, optional): _description_. Defaults to 5.
+        logger_level (int | None, optional): _description_. Defaults to None.
+
+    Returns
+    -------
+        logging.Logger: _description_
+    """
+    logger = logging.getLogger(logger_name)
+    handler = Cosmos(
+        db, container, conn_str, default_partition_key, global_client, max_retries
+    )
+    if logger_level is None:
+        logger_level = logging.DEBUG
+    logger.setLevel(logger_level)
+    logger.addHandler(handler)
+    return logger
