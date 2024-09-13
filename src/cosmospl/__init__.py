@@ -12,7 +12,6 @@ from typing import (
     Any,
     AsyncGenerator,
     AsyncIterator,
-    Generator,
     Literal,
     TypeAlias,
     cast,
@@ -338,41 +337,36 @@ class Cosmos:
     async def query(
         self,
         query: str,
-        params: list[dict[str, str]] | None,
-        partition_key: str | None,
-        return_as: Literal["dict"],
-        max_item: int | str | None,
-        max_retries: int | None,
-        pk_id: str | int | None,
     ) -> dict[str, Any]: ...
 
     @overload
     async def query(
         self,
         query: str,
-        params: list[dict[str, str]] | None,
-        partition_key: str | None,
+        *,
+        return_as: Literal["dict"],
+    ) -> dict[str, Any]: ...
+
+    @overload
+    async def query(
+        self,
+        query: str,
+        *,
         return_as: Literal["pl", "pljson"],
-        max_item: int | str | None,
-        max_retries: int | None,
-        pk_id: str | int | None,
     ) -> pl.DataFrame: ...
 
     @overload
     async def query(
         self,
         query: str,
-        params: list[dict[str, str]] | None,
-        partition_key: str | None,
+        *,
         return_as: Literal["raw"],
-        max_item: int | str | None,
-        max_retries: int | None,
-        pk_id: str | int | None,
     ) -> str: ...
 
     async def query(
         self,
         query: str,
+        *,
         params: list[dict[str, str]] | None = None,
         partition_key: str | None = None,
         return_as: ALLOWED_RETURNS = "dict",
@@ -739,33 +733,36 @@ class Cosmos:
     async def read(
         self,
         id: str,
-        partition_key: str | None,
+        *,
+        partition_key: str,
         return_as: Literal["dict"],
-        max_retries: int,
     ) -> dict[str, Any]: ...
+    @overload
+    async def read(self, id: str, *, partition_key: str) -> dict[str, Any]: ...
 
     @overload
     async def read(
         self,
         id: str,
-        partition_key: str | None,
+        *,
+        partition_key: str,
         return_as: Literal["pl", "pljson"],
-        max_retries: int,
     ) -> pl.DataFrame: ...
 
     @overload
     async def read(
         self,
         id: str,
-        partition_key: str | None,
+        *,
+        partition_key: str,
         return_as: Literal["raw"],
-        max_retries: int,
     ) -> str: ...
 
     async def read(
         self,
         id: str,
-        partition_key: str | None = None,
+        *,
+        partition_key: str,
         return_as: ALLOWED_RETURNS = "dict",
         max_retries: int = 5,
     ):
@@ -818,6 +815,8 @@ class Cosmos:
         self, return_as: Literal["dict"]
     ) -> dict[str, Any]: ...
     @overload
+    async def get_container_meta(self) -> dict[str, Any]: ...
+    @overload
     async def get_container_meta(
         self, return_as: Literal["pl", "pljson"]
     ) -> pl.DataFrame: ...
@@ -853,6 +852,8 @@ class Cosmos:
 
     @overload
     async def get_pk_ranges(self, return_as: Literal["dict"]) -> dict[str, Any]: ...
+    @overload
+    async def get_pk_ranges(self) -> dict[str, Any]: ...
     @overload
     async def get_pk_ranges(
         self, return_as: Literal["pl", "pljson"]
