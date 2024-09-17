@@ -18,7 +18,7 @@ from typing import (
     cast,
     overload,
 )
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 import httpx
 import orjson
@@ -716,7 +716,7 @@ class Cosmos:
             max_retries = self.max_retries
         headers = self._make_headers(partition_key=partition_key)
 
-        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{id}"
+        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{quote_plus(id)}"
         try:
             resp = await self.client.delete(url, headers=headers)
             resp.raise_for_status()
@@ -784,13 +784,13 @@ class Cosmos:
         partition_key: str | None = None,
         retries: int = 0,
         max_retries: int = 5,
-    ) -> httpx.Response:
+    ):
         resource_type = "docs"
         headers = self._make_headers(
             resource_type=resource_type, partition_key=partition_key
         )
 
-        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{id}"
+        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}/docs/{quote_plus(id)}"
         try:
             resp = await self.client.get(url, headers=headers)
             resp.raise_for_status()
