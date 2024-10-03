@@ -3,3 +3,9 @@ dist
 .env
 __pycache__
 windows
+dist/*
+src/cosmospl.egg-info/dependency_links.txt
+src/cosmospl.egg-info/PKG-INFO
+src/cosmospl.egg-info/requires.txt
+src/cosmospl.egg-info/SOURCES.txt
+src/cosmospl.egg-info/top_level.txt

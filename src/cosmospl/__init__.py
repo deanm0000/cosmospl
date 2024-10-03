@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import logging
 import os
+import time
 import warnings
 from datetime import datetime, timezone  # timedelta
 from typing import (
@@ -393,6 +394,34 @@ class Cosmos:
         """
         if max_retries is None:
             max_retries = self.max_retries
+        if partition_key is None and pk_id is None:
+            pk_ids = [
+                x["id"] for x in (await self.get_pk_ranges())["PartitionKeyRanges"]
+            ]
+            results = await asyncio.gather(
+                *[
+                    self._query(
+                        query,
+                        params,
+                        partition_key,
+                        return_as,
+                        max_item,
+                        0,
+                        max_retries,
+                        pk_id_,
+                    )
+                    for pk_id_ in pk_ids
+                ]
+            )
+            if return_as == "dict":
+                new_results = []
+                for res in results:
+                    new_results.extend(res)
+                return new_results
+            elif return_as in ["pl", "pljson"]:
+                return pl.concat(results)
+            else:
+                return results
 
         return await self._query(
             query,
@@ -840,16 +869,23 @@ class Cosmos:
         resp = await self.client.get(url, headers=headers)
         return self._apply_return_as(resp, return_as)
 
-    def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS = "dict"):
+    def _get_container_meta_sync(self, return_as: ALLOWED_RETURNS = "dict", retries=0):
         assert self.client.auth is not None
         assert hasattr(self.client.auth, "master_key")
 
         master_key: str = self.client.auth.master_key  # type: ignore
-        sync_client = httpx.Client(auth=CosAuth(master_key))
-        url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
-        headers = self._make_headers(resource_type="colls")
-        resp = sync_client.get(url, headers=headers)
-        return self._apply_return_as(resp, return_as)
+        try:
+            sync_client = httpx.Client(auth=CosAuth(master_key))
+            url = f"{self.base_url}/dbs/{self.db}/colls/{self.container}"
+            headers = self._make_headers(resource_type="colls")
+            resp = sync_client.get(url, headers=headers)
+            return self._apply_return_as(resp, return_as)
+        except Exception:
+            time.sleep(1)
+            if retries < 5:
+                return self._get_container_meta_sync(
+                    return_as=return_as, retries=retries + 1
+                )
 
     @overload
     async def get_pk_ranges(self, return_as: Literal["dict"]) -> dict[str, Any]: ...
