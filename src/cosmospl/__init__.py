@@ -234,6 +234,7 @@ class Cosmos:
         default_partition_key: str | None = None,
         global_client: str | None = None,
         max_retries: int = 5,
+        use_nest_asyncio=True,
     ):
         self.max_retries = max_retries
         if conn_str is None and "cosmos" in os.environ:
@@ -263,7 +264,7 @@ class Cosmos:
                 )
             self.client = globals()[global_client]
 
-        if has_nest is True:
+        if has_nest is True and use_nest_asyncio:
             loop = asyncio.get_event_loop()
             # Schedule the coroutine and get the result
             future = asyncio.ensure_future(self.get_container_meta(return_as="dict"))
