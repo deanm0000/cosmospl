@@ -34,14 +34,7 @@ from cosmospl.exceptions import (
 
 with contextlib.suppress(ModuleNotFoundError):
     import polars as pl
-has_nest = False
-with contextlib.suppress(ModuleNotFoundError):
-    import nest_asyncio
 
-    has_nest = True
-
-if has_nest is True:
-    nest_asyncio.apply()
 ALLOWED_RETURNS: TypeAlias = Literal["dict", "pl", "raw", "pljson", "resp"]
 DOC_STR = 'Documents":['
 COUNT_STR = ',"_count"'
@@ -232,9 +225,8 @@ class Cosmos:
         container: str,
         conn_str: str | None = None,
         default_partition_key: str | None = None,
-        global_client: str | None = None,
+        global_client: str | None = "__COSMOS",
         max_retries: int = 5,
-        use_nest_asyncio=True,
     ):
         self.max_retries = max_retries
         if conn_str is None and "cosmos" in os.environ:
@@ -264,13 +256,7 @@ class Cosmos:
                 )
             self.client = globals()[global_client]
 
-        if has_nest is True and use_nest_asyncio:
-            loop = asyncio.get_event_loop()
-            # Schedule the coroutine and get the result
-            future = asyncio.ensure_future(self.get_container_meta(return_as="dict"))
-            meta = loop.run_until_complete(future)
-        else:
-            meta = self._get_container_meta_sync()
+        meta = self._get_container_meta_sync()
         assert meta is not None
         assert isinstance(meta, dict)
         self.meta = meta
