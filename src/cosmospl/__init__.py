@@ -330,6 +330,12 @@ class Cosmos:
     async def query(
         self,
         query: str,
+        *,
+        params: list[dict[str, str]] | None = ...,
+        partition_key: str | None = ...,
+        max_item: int | str | None = ...,
+        max_retries: int | None = ...,
+        pk_id: str | list[str] | None = ...,
     ) -> list[dict[str, float | int | str | bool | None]]: ...
 
     @overload
@@ -337,6 +343,11 @@ class Cosmos:
         self,
         query: str,
         *,
+        params: list[dict[str, str]] | None = ...,
+        partition_key: str | None = ...,
+        max_item: int | str | None = ...,
+        max_retries: int | None = ...,
+        pk_id: str | list[str] | None = ...,
         return_as: Literal["dict"],
     ) -> list[dict[str, float | int | str | bool | None]]: ...
 
@@ -345,6 +356,11 @@ class Cosmos:
         self,
         query: str,
         *,
+        params: list[dict[str, str]] | None = ...,
+        partition_key: str | None = ...,
+        max_item: int | str | None = ...,
+        max_retries: int | None = ...,
+        pk_id: str | list[str] | None = ...,
         return_as: Literal["pl", "pljson"],
     ) -> plt.DataFrame: ...
 
@@ -353,6 +369,11 @@ class Cosmos:
         self,
         query: str,
         *,
+        params: list[dict[str, str]] | None = ...,
+        partition_key: str | None = ...,
+        max_item: int | str | None = ...,
+        max_retries: int | None = ...,
+        pk_id: str | list[str] | None = ...,
         return_as: Literal["raw"],
     ) -> bytes | list[bytes]: ...
 
@@ -361,6 +382,11 @@ class Cosmos:
         self,
         query: str,
         *,
+        params: list[dict[str, str]] | None = ...,
+        partition_key: str | None = ...,
+        max_item: int | str | None = ...,
+        max_retries: int | None = ...,
+        pk_id: str | list[str] | None = ...,
         return_as: Literal["resp"],
     ) -> httpx.Response | list[httpx.Response]: ...
 
