@@ -9,11 +9,11 @@ import logging
 import os
 import time
 import warnings
-from datetime import datetime, timezone  # timedelta
+from datetime import datetime, timezone
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncGenerator,
-    AsyncIterator,
     Literal,
     TypeAlias,
     cast,
@@ -32,6 +32,12 @@ from cosmospl.exceptions import (
     UnsupportedPartitionKey,
 )
 
+# Import polars for type checking only
+if TYPE_CHECKING:
+    import polars as plt
+
+# Attempt to import polars at runtime
+pl = None
 with contextlib.suppress(ModuleNotFoundError):
     import polars as pl
 
@@ -57,7 +63,7 @@ class CosAuth(httpx.Auth):  # noqa: D101
 
     async def async_auth_flow(
         self, request: httpx.Request
-    ) -> AsyncIterator[httpx.Request]:
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
         """
         Make auth_flow for httpx Auth.
 
@@ -210,9 +216,7 @@ def _gen_sig(
 
     master_token = "master"
     token_version = "1.0"
-    # print(text)
     secret = f"type={master_token}&ver={token_version}&sig={signature[:-1]}"
-    # print(secret)
     return quote(secret, "-_.!~*'()")
 
 
@@ -326,7 +330,7 @@ class Cosmos:
     async def query(
         self,
         query: str,
-    ) -> dict[str, Any]: ...
+    ) -> list[dict[str, float | int | str | bool | None]]: ...
 
     @overload
     async def query(
@@ -334,7 +338,7 @@ class Cosmos:
         query: str,
         *,
         return_as: Literal["dict"],
-    ) -> dict[str, Any]: ...
+    ) -> list[dict[str, float | int | str | bool | None]]: ...
 
     @overload
     async def query(
@@ -342,7 +346,7 @@ class Cosmos:
         query: str,
         *,
         return_as: Literal["pl", "pljson"],
-    ) -> pl.DataFrame: ...
+    ) -> plt.DataFrame: ...
 
     @overload
     async def query(
@@ -350,7 +354,15 @@ class Cosmos:
         query: str,
         *,
         return_as: Literal["raw"],
-    ) -> str: ...
+    ) -> bytes | list[bytes]: ...
+
+    @overload
+    async def query(
+        self,
+        query: str,
+        *,
+        return_as: Literal["resp"],
+    ) -> httpx.Response | list[httpx.Response]: ...
 
     async def query(
         self,
@@ -361,7 +373,7 @@ class Cosmos:
         return_as: ALLOWED_RETURNS = "dict",
         max_item: int | str | None = None,
         max_retries: int | None = None,
-        pk_id: str | int | None = None,
+        pk_id: str | list[str] | None = None,
     ):
         """
         Perform query and return all results.
@@ -379,47 +391,62 @@ class Cosmos:
         -------
             _type_: _description_
         """
+        if return_as in ["pl", "pljson"] and pl is None:
+            msg = f"can't use return_as={return_as} without polars installed"
+            raise ValueError(msg)
         if max_retries is None:
             max_retries = self.max_retries
-        if partition_key is None and pk_id is None:
-            pk_ids = [
-                x["id"] for x in (await self.get_pk_ranges())["PartitionKeyRanges"]
-            ]
-            results = await asyncio.gather(
-                *[
-                    self._query(
-                        query,
-                        params,
-                        partition_key,
-                        return_as,
-                        max_item,
-                        0,
-                        max_retries,
-                        pk_id_,
-                    )
-                    for pk_id_ in pk_ids
-                ]
-            )
-            if return_as == "dict":
-                new_results = []
-                for res in results:
-                    new_results.extend(res)
-                return new_results
-            elif return_as in ["pl", "pljson"]:
-                return pl.concat(results)
-            else:
-                return results
 
-        return await self._query(
-            query,
-            params,
-            partition_key,
-            return_as,
-            max_item,
-            0,
-            max_retries,
-            pk_id,
+        if pk_id is None:
+            pk_ids = [
+                cast(str, x["id"])
+                for x in (await self.get_pk_ranges())["PartitionKeyRanges"]
+            ]
+        elif not isinstance(pk_id, list):
+            pk_ids = [pk_id]
+        else:
+            pk_ids = pk_id
+        results = await asyncio.gather(
+            *[
+                self._query(
+                    query,
+                    params,
+                    partition_key,
+                    return_as,
+                    max_item,
+                    0,
+                    max_retries,
+                    pk_id_,
+                )
+                for pk_id_ in pk_ids
+            ]
         )
+        if return_as == "dict":
+            new_results = []
+            for res in results:
+                assert isinstance(res, list)
+                new_results.extend(res)
+            return new_results
+        if return_as in ["pl", "pljson"]:
+            assert pl is not None
+            typed_results = [x for x in results if isinstance(x, pl.DataFrame)]
+            assert len(typed_results) == len(results)
+            return pl.concat(typed_results)
+        if return_as == "raw" or return_as == "resp":
+            flat_return = []
+            for res in results:
+                if isinstance(res, list):
+                    flat_return.extend(res)
+                else:
+                    flat_return.append(res)
+            if len(flat_return) == 1 and return_as == "raw":
+                return cast(bytes, flat_return[0])
+            elif return_as == "raw":
+                return cast(list[bytes], flat_return)
+            elif len(flat_return) == 1 and return_as == "resp":
+                return cast(httpx.Response, flat_return[0])
+            elif return_as == "resp":
+                return cast(list[httpx.Response], flat_return)
 
     async def _query(
         self,
@@ -431,6 +458,8 @@ class Cosmos:
         retries: int = 0,
         max_retries: int = 5,
         pk_id: str | int | None = None,
+        continuation: str | None = None,
+        prevReturn: list[httpx.Response] | None = None,
     ):
         """
         Private query meant for recursion with retries.
@@ -447,12 +476,10 @@ class Cosmos:
         -------
             _type_: _description_
         """
+        if prevReturn is None:
+            prevReturn = []
         params, body, headers, url = self._prep_query(
-            query,
-            params,
-            partition_key,
-            max_item,
-            pk_id,
+            query, params, partition_key, max_item, pk_id, continuation
         )
         try:
             resp = await self._get_resp(
@@ -463,7 +490,6 @@ class Cosmos:
             resp.raise_for_status()
             if "x-ms-session-token" in resp.headers:
                 self.session = resp.headers["x-ms-session-token"]
-
         except Resp401:
             raise
         except Exception:
@@ -472,50 +498,57 @@ class Cosmos:
                     query,
                     params,
                     partition_key,
-                    "resp",
+                    return_as,
                     max_item,
                     retries + 1,
                     max_retries,
                     pk_id,
+                    continuation,
+                    prevReturn,
                 )
                 resp = cast(httpx.Response, resp)
             else:
                 raise
-        if return_as == "resp":
-            return resp
-        # try:
-        #     resp_bytes = await self._get_stream(
-        #         url,
-        #         json=body,
-        #         headers=headers,
-        #     )
-        # except Resp401:
-        #     raise
-        # except Exception:
-        #     if retries < max_retries:
-        #         return await self._query(
-        #             query,
-        #             params,
-        #             partition_key,
-        #             return_as,
-        #             max_item,
-        #             retries=retries + 1,
-        #             max_retries=max_retries,
-        #         )
-        #     else:
-        #         raise
-        if return_as == "dict":
-            return orjson.loads(resp.content)["Documents"]
-        elif return_as == "pljson":
-            return (
-                pl.read_json(resp.content)
-                .select(pl.col("Documents").explode())
-                .unnest("Documents")
+        prevReturn.append(resp)
+        if "x-ms-continuation" in resp.headers:
+            return await self._query(
+                query,
+                params,
+                partition_key,
+                return_as,
+                max_item,
+                retries + 1,
+                max_retries,
+                pk_id,
+                resp.headers.get("x-ms-continuation"),
+                prevReturn,
             )
-        elif return_as == "pl":
-            return pl.read_json(get_inner_content(resp.content))
-        else:
-            return resp.content
+
+        if return_as == "resp":
+            return cast(list[httpx.Response], prevReturn)
+        if return_as == "dict":
+            finalReturn = []
+            for resp in prevReturn:
+                loaded = orjson.loads(resp.content)
+                assert isinstance(loaded, dict)
+                assert "Documents" in loaded
+                finalReturn.extend(loaded["Documents"])
+            return cast(list[dict[str, str | float | int | bool | None]], finalReturn)
+        if return_as == "pljson" or return_as == "pl":
+            assert pl is not None
+            finalReturn = []
+            for resp in prevReturn:
+                if return_as == "pljson":
+                    finalReturn.append(
+                        pl.read_json(resp.content)
+                        .select(pl.col("Documents").explode())
+                        .unnest("Documents")
+                    )
+                else:
+                    finalReturn.append(pl.read_json(get_inner_content(resp.content)))
+            return pl.concat(finalReturn)
+
+        return prevReturn
 
     def _prep_query(
         self,
@@ -524,6 +557,7 @@ class Cosmos:
         partition_key: str | None = None,
         max_item: int | str | None = None,
         pk_id: int | str | None = None,
+        continuation: str | None = None,
     ):
         if params is None:
             params = []
@@ -537,6 +571,8 @@ class Cosmos:
             partition_key=partition_key,
             pk_id=pk_id,
         )
+        if continuation is not None:
+            headers["x-ms-continuation"] = continuation
 
         url = self.base_url + f"//dbs/{self.db}/colls/{self.container}/docs"
         return (params, body, headers, url)
@@ -621,6 +657,7 @@ class Cosmos:
         elif resp.status_code != 200:
             msg = resp.text
             raise RespFail(msg)
+        assert isinstance(resp, httpx.Response)
         return resp
 
     async def _get_stream(self, url, *, json, headers, continued=0):
@@ -744,6 +781,7 @@ class Cosmos:
         except Exception:
             if retries < max_retries - 1:
                 return await self.delete(id, partition_key, retries + 1, max_retries)
+            raise
         return resp.content
 
     @overload
@@ -764,7 +802,7 @@ class Cosmos:
         *,
         partition_key: str,
         return_as: Literal["pl", "pljson"],
-    ) -> pl.DataFrame: ...
+    ) -> plt.DataFrame: ...
 
     @overload
     async def read(
@@ -817,6 +855,7 @@ class Cosmos:
                 return await self._read(
                     id, partition_key, retries=retries + 1, max_retries=max_retries
                 )
+            raise
         return resp
 
     def _apply_return_as(self, resp: httpx.Response, return_as: ALLOWED_RETURNS):
@@ -825,6 +864,7 @@ class Cosmos:
         elif return_as == "dict":
             return orjson.loads(resp.content)
         elif return_as in ["pljson", "pl"]:
+            assert pl is not None
             return pl.read_json(resp.content)
 
     @overload
@@ -836,7 +876,7 @@ class Cosmos:
     @overload
     async def get_container_meta(
         self, return_as: Literal["pl", "pljson"]
-    ) -> pl.DataFrame: ...
+    ) -> plt.DataFrame: ...
     @overload
     async def get_container_meta(self, return_as: Literal["raw"]) -> str: ...
 
@@ -881,7 +921,7 @@ class Cosmos:
     @overload
     async def get_pk_ranges(
         self, return_as: Literal["pl", "pljson"]
-    ) -> pl.DataFrame: ...
+    ) -> plt.DataFrame: ...
     @overload
     async def get_pk_ranges(self, return_as: Literal["raw"]) -> str: ...
 
